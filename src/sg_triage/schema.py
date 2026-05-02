@@ -107,6 +107,10 @@ class Finding(BaseModel):
         default=None,
         description="Human-readable summary of source -> sink path, if Semgrep provided one",
     )
+    semgrep_confidence: str | None = Field(
+        default=None,
+        description="LOW/MEDIUM/HIGH from Semgrep metadata, if present",
+    )
 
 
 class CalledFunction(BaseModel):
@@ -263,3 +267,8 @@ class Report(BaseModel):
     total_duration_seconds: float = 0.0
     cache_hits: int = 0
     cache_misses: int = 0
+
+    semgrep_parse_errors: list[str] = Field(
+        default_factory=list,
+        description="Files Semgrep couldn't fully parse during the scan",
+    )
