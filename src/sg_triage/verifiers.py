@@ -185,6 +185,108 @@ _GENERIC_VOCAB = frozenset(
         "com",
         "org",
         "io",
+        # Cryptography vocabulary
+        "signature",
+        "signatures",
+        "signed",
+        "signing",
+        "sign",
+        "hash",
+        "hashed",
+        "hashing",
+        "digest",
+        "checksum",
+        "cipher",
+        "encrypt",
+        "encrypted",
+        "encryption",
+        "decrypt",
+        "decryption",
+        "key",
+        "keys",
+        "keyed",
+        "salt",
+        "salted",
+        "iv",
+        "nonce",
+        "collision",
+        "collisions",
+        "preimage",
+        "entropy",
+        "algorithm",
+        "algorithms",
+        # Web-vulnerability vocabulary that's conceptual, not code
+        "endpoint",
+        "endpoints",
+        "route",
+        "routes",
+        "handler",
+        "handlers",
+        "form",
+        "forms",
+        "field",
+        "fields",
+        "header",
+        "headers",
+        "query",
+        "queries",
+        "param",
+        "params",
+        "parameters",
+        "arguments",
+        "responses",
+        "redirect",
+        "redirects",
+        "url",
+        "urls",
+        "uri",
+        "path",
+        "paths",
+        "cors",
+        "csrf",
+        "xss",
+        "sqli",
+        "ssrf",
+        "rce",
+        "lfi",
+        "rfi",
+        "xxe",
+        # Common verbs in security reasoning
+        "exploited",
+        "exploiting",
+        "vulnerable",
+        "vulnerabilities",
+        "attack",
+        "attacks",
+        "attacked",
+        "attacking",
+        "controls",
+        "controlled",
+        "controlling",
+        "trust",
+        "trusted",
+        "untrusted",
+        "trustworthy",
+        "safe",
+        "unsafe",
+        "secure",
+        "insecure",
+        "bypass",
+        "bypassed",
+        "bypassing",
+        "filter",
+        "filters",
+        "filtered",
+        "filtering",
+        "escape",
+        "escaped",
+        "escaping",
+        "encode",
+        "encoded",
+        "encoding",
+        "decode",
+        "decoded",
+        "decoding",
     }
 )
 
@@ -232,27 +334,39 @@ def verify_grounding(
 # ---------------------------------------------------------------------------
 
 
+# Matches the line-number prefix we add for readability, e.g. "  281 | "
+# We strip these from the haystack before matching, so quotes of the raw
+# code line content match correctly.
+_LINE_NUMBER_PREFIX = re.compile(r"^\s*\d+\s*\|\s?", re.MULTILINE)
+
+
+def _strip_line_prefixes(text: str) -> str:
+    """Remove our 'NNN | ' line-number formatting from text."""
+    return _LINE_NUMBER_PREFIX.sub("", text)
+
+
 def _build_haystack(finding: Finding, context: CodeContext) -> str:
     """Concatenate everything the LLM was shown, for substring matching.
 
     Order doesn't matter — we only care whether tokens / quotes appear
-    somewhere in the sent context.
+    somewhere in the sent context. We strip our 'NNN | ' line-number
+    prefixes so quotes of raw code lines match correctly.
     """
     parts: list[str] = [
         finding.matched_code,
         finding.message,
         finding.rule_id,
         finding.file_path,
-        context.matched_code_with_lines,
+        _strip_line_prefixes(context.matched_code_with_lines),
     ]
     if context.imports:
         parts.append(context.imports)
     if context.containing_function_source:
-        parts.append(context.containing_function_source)
+        parts.append(_strip_line_prefixes(context.containing_function_source))
     if context.containing_function_name:
         parts.append(context.containing_function_name)
     for cf in context.called_functions:
-        parts.append(cf.source)
+        parts.append(_strip_line_prefixes(cf.source))
         parts.append(cf.name)
     return "\n".join(parts)
 

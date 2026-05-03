@@ -213,7 +213,11 @@ to you, say so in `missing_context` rather than assuming what it does.
 
 For `false_positive` verdicts, you must provide at least one verbatim quote
 from the code in `evidence_quotes`. Quotes must match the source character
-for character including whitespace. These quotes will be programmatically
+for character.
+
+When quoting, quote the raw code only. Do NOT include the line-number
+prefix (e.g., `'277 |'`) that is shown for readability — quote the code as
+it appears after the `|` character. These quotes will be programmatically
 verified — fabricated quotes will cause your verdict to be discarded.\
 """
 

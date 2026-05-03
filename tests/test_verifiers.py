@@ -198,3 +198,26 @@ def test_grounding_does_not_flag_token_appearing_in_function_name():
     v = _verdict(reasoning="The `process_data` function evaluates user input.")
     issues = verify_grounding(v, _finding(), _context())
     assert issues == []
+
+
+def test_evidence_quotes_pass_when_quote_is_raw_code_without_line_prefix():
+    # The haystack contains "10 |     eval(user_input)" but the LLM should
+    # quote it as just "    eval(user_input)" without our line prefix.
+    v = _verdict(
+        label=VerdictLabel.FALSE_POSITIVE,
+        evidence_quotes=["    eval(user_input)"],
+        fp_categories=[FPCategory.OTHER],
+    )
+    issues = verify_evidence_quotes(v, _finding(), _context())
+    assert issues == []
+
+
+def test_grounding_passes_for_cryptography_vocabulary():
+    v = _verdict(
+        reasoning=(
+            "SHA1 is used here for cryptographic signatures and hashes. "
+            "The algorithm is insecure due to collision attacks."
+        )
+    )
+    issues = verify_grounding(v, _finding(), _context())
+    assert issues == []
