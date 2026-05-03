@@ -287,6 +287,28 @@ _GENERIC_VOCAB = frozenset(
         "decode",
         "decoded",
         "decoding",
+        "mechanism",
+        "mechanisms",
+        "behavior",
+        "behaviour",
+        "implementation",
+        "feature",
+        "features",
+        "functionality",
+        "purpose",
+        "intent",
+        "intention",
+        "design",  # File / path vocabulary that's conceptual, not code-specific
+        "file",
+        "files",
+        "filename",
+        "filenames",
+        "directory",
+        "directories",
+        "folder",
+        "folders",
+        "name",
+        "names",
     }
 )
 
