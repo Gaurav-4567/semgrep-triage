@@ -10,7 +10,7 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 authors = [
-    { name = "Gaurav", email = "your-email@example.com" }
+    { name = "Gaurav", email = "gauraviyer911@gmail.com" }
 ]
 keywords = ["semgrep", "sast", "security", "appsec", "llm", "triage"]
 classifiers = [
@@ -28,8 +28,8 @@ dependencies = [
     "click>=8.1.0",
     "pydantic>=2.5.0",
     "anthropic>=0.39.0",
-    "tree-sitter>=0.21.0",
-    "tree-sitter-language-pack>=0.2.0",
+    "tree-sitter>=0.23.0",
+    "tree-sitter-python>=0.23.0",
     "rich>=13.7.0",
 ]
 
