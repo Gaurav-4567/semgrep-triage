@@ -11,7 +11,7 @@ This module defines the data contracts used across the entire pipeline:
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ----------------------------------------------------------------------------
 # Enums — constrained vocabularies used throughout the pipeline
@@ -183,6 +183,19 @@ class Verdict(BaseModel):
     suggested_action: str = Field(
         ..., description="One short sentence: what the human reviewer should do"
     )
+
+    @field_validator("evidence_quotes", "missing_context", "fp_categories", mode="before")
+    @classmethod
+    def _coerce_empty_to_list(cls, value):
+        """Tolerate LLMs that send '' or None for list fields.
+
+        Even with tool-use enforcement, models occasionally return '' or
+        null for array fields when they have nothing to put there. Coerce
+        to an empty list rather than rejecting the verdict.
+        """
+        if value is None or value == "":
+            return []
+        return value
 
 
 class TriagedFinding(BaseModel):

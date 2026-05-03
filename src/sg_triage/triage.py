@@ -227,6 +227,26 @@ def _process_one(
     except Exception as e:
         return _synthesize_crash_fallback(finding, e, context=context, fingerprint=fingerprint)
 
+    # If the LLM client had to synthesize a verdict (API error, malformed
+    # output, etc.), skip verification — there's nothing to verify, and
+    # the synthesized reasoning may contain Pydantic error fragments that
+    # would trigger the grounding verifier as false-positive flags.
+    if result.synthesized_reason:
+        return TriagedFinding(
+            finding=finding,
+            context=context,
+            verdict=result.verdict,
+            fingerprint=fingerprint,
+            from_cache=False,
+            verification_passed=True,
+            verification_notes=[
+                f"LLM call did not produce a usable verdict: {result.synthesized_reason}"
+            ],
+            llm_call_duration_seconds=result.duration_seconds,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+        )
+
     # Verifiers (always run, never raise)
     quote_issues = verify_evidence_quotes(result.verdict, finding, context)
     grounding_issues = verify_grounding(result.verdict, finding, context)
