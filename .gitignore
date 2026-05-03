@@ -25,3 +25,5 @@ Thumbs.db
 findings.json
 *.report.json
 *.report.md
+# Working notes
+.claude-context.md
