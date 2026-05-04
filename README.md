@@ -1,25 +1,153 @@
 # sg-triage
 
-LLM-assisted false-positive triage for Semgrep findings.
+**Cut Semgrep noise without trusting an LLM blindly.** Every false-positive verdict is grounded in verifiable quotes from your code.
 
-**Status:** v0.1 in development.
+`sg-triage` is a Python CLI that takes Semgrep JSON output, sends each finding to Claude with the surrounding code context, and produces a triage report. Every finding gets one of three verdicts: likely a real bug, likely a false positive, or needs human review. False-positive verdicts come with verbatim quotes from your code, programmatically checked to catch the most obvious failure mode of LLM-based tools — fabricated reasoning.
 
-## What it does
+> ⚠️ **Status: v0.1, early experimental release.** This tool does NOT replace a security engineer's review. It triages findings into three buckets and reduces the volume that need human attention. Read [Limitations](#limitations) before using on anything you'd put in production.
 
-Takes Semgrep JSON output, extracts code context for each finding, and uses
-Claude to classify findings as false positives, likely real issues, or
-needing human review.
+## What sg-triage does
 
-## Installation
+For each Semgrep finding, the tool:
 
-```bash
-pip install sg-triage
+1. Parses the Semgrep JSON output
+2. Extracts the surrounding code context using tree-sitter (the containing function, file imports, called functions one hop deep)
+3. Sends the finding plus context to Claude, with a structured prompt designed for security triage
+4. Validates Claude's response: every claim in the reasoning must reference code Claude actually saw, and every false-positive verdict must include verbatim quotes from the code
+5. Produces a report in three formats: terminal panels, structured JSON, or shareable Markdown
+
+Findings that fail validation, or that Claude isn't confident about, are routed to `needs_human_review` rather than guessed at. The tool is designed to fail toward "ask a human" instead of toward "wrong answer."
+
+## A real example
+
+Semgrep flags this code in Flask's CLI module (`src/flask/cli.py:1023`):
+
+```python
+eval(compile(f.read(), startup, "exec"), ctx)
 ```
+
+The rule is `python.lang.security.audit.eval-detected.eval-detected`. Looking at this in isolation, an automated triage tool — or a tired engineer skimming a 200-finding report — might either flag this as a real bug or wave it through.
+
+`sg-triage` triaged this as **`false_positive`** with **high confidence**. Here's the verdict it produced:
+
+> The eval() call is executing code from the PYTHONSTARTUP environment variable, which is a standard Python interpreter feature. The code reads from `startup = os.environ.get("PYTHONSTARTUP")` and only executes if `os.path.isfile(startup)` is true. PYTHONSTARTUP is a Python interpreter convention that allows users to configure their own interactive shell startup script — it is set by the user running the Python process, not by external attackers. This is equivalent to the user running arbitrary Python code themselves, which they can already do by simply invoking the Python interpreter. The "attacker" would need to control the environment variable of the process they're already running, which means they already have code execution capability.
+
+**Evidence quotes** (verified to appear verbatim in the source):
+startup = os.environ.get("PYTHONSTARTUP")
+if startup and os.path.isfile(startup):
+eval(compile(f.read(), startup, "exec"), ctx)
+
+This is the kind of verdict a senior security engineer would write after spending 5–10 minutes reading the surrounding code. `sg-triage` produced it in roughly 10 seconds for about $0.02 in API costs.
+
+The full Markdown report from running `sg-triage` on Django is in [`examples/django-report.md`](examples/django-report.md).
 
 ## Quickstart
 
-_Coming in v0.1.0 release._
+You'll need:
+- Python 3.10+
+- Semgrep installed (`pip install semgrep`)
+- An Anthropic API key ([get one here](https://console.anthropic.com/settings/keys))
+- $5–20 of Anthropic API credit to start (you pay Anthropic directly; this tool charges nothing)
+
+Install:
+
+```bash
+git clone https://github.com/Gaurav-4567/semgrep-triage.git
+cd semgrep-triage
+pip install -e .
+```
+
+Set your API key (or use a `.env` file):
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+Run Semgrep on a Python project, then triage the output:
+
+```bash
+cd /path/to/your/project
+semgrep --config=auto --json --output=findings.json .
+
+cd /path/to/semgrep-triage
+sg-triage triage /path/to/your/project/findings.json /path/to/your/project \
+  --output-md report.md
+```
+
+Open `report.md` to see the triage results.
+
+## Cost
+
+You pay Anthropic directly for API usage. There is no SaaS layer, no telemetry, no per-seat licensing.
+
+| Scenario | Approximate cost |
+|---|---|
+| One Python finding triaged | ~$0.02 |
+| 100 Python findings | ~$2 |
+| 500 Python findings | ~$10 |
+| Re-running on the same code | $0 (cached) |
+
+Verdicts are cached locally per finding. Re-running on the same code returns instantly with no API cost. Edits to the relevant function invalidate the cache automatically and trigger re-triage.
+
+For comparison: a senior security engineer triaging 100 findings manually takes 4–8 hours. Commercial SAST AI add-ons run $20–100 per developer per month.
+
+## How it works
+
+**Code context extraction.** When Semgrep flags a line, `sg-triage` uses tree-sitter to find the function containing the match, the file's imports, and any functions called from within the matching function (resolved one hop deep). Whatever the extractor cannot resolve — a third-party function definition, a module-level match — is recorded as an "extraction note" and surfaced to the LLM as missing context. The pipeline is honest about what it didn't see.
+
+**LLM call.** Each finding is sent to Claude (Sonnet 4.5 by default) with a structured prompt designed for security triage. The prompt includes calibration instructions that bias toward `needs_human_review` on uncertainty, explicit warnings about common false-positive patterns AND common false-negative traps (cases that look like FPs but aren't), and a hard requirement that false-positive verdicts include verbatim code quotes as evidence. The LLM is forced to return its verdict via Anthropic's tool-use, which gives us schema-level validation.
+
+**Verification.** After every LLM call, two checks run:
+1. Each evidence quote must appear verbatim in the code we sent (whitespace-normalized).
+2. Identifier-like tokens in the reasoning (function names, variable names, dotted references) must appear in the prompt context. Generic English vocabulary is whitelisted.
+
+If either check fails, the verdict is downgraded to `needs_human_review` with a note explaining why. The original verdict and the verifier's complaint are both preserved in the report. **The verifier doesn't prevent hallucinations — it catches them and routes the affected finding back to the human.**
+
+**Caching.** Each finding is fingerprinted as a hash of `(prompt_version, rule_id, file_path, matched_code, containing_function_source)`. Cached verdicts persist at `~/.sg-triage/cache/`. The cache invalidates automatically when the prompt changes between releases or when the relevant code changes; line-number shifts from unrelated edits don't invalidate it. Use `--no-cache` to force re-triage.
+
+**Concurrency.** Up to 5 LLM calls run in parallel via a thread pool. Per-finding errors are isolated — a single crashing finding never kills the run.
+
+## Output formats
+
+**Terminal:** colored panels per finding, sorted by actionability (likely real bugs first, then needs-review, then false positives), followed by a summary.
+
+**JSON** (`--output-json report.json`): structured report matching the project's Pydantic schema. For CI integration and programmatic consumption.
+
+**Markdown** (`--output-md report.md`): shareable report with per-finding details, per-rule statistics, and a footer with run metadata. Render in a Markdown viewer or paste in a PR comment.
+
+## Limitations
+
+You should know the following before using `sg-triage`:
+
+**Scope:**
+- v0.1 supports Python source files only. HTML, JavaScript, Go, etc. findings are routed to `needs_human_review` with a note. Multi-language support is on the v0.2 roadmap.
+- Semgrep is the only supported scanner input.
+- Free tier of Semgrep redacts the matched code in JSON output (`"requires login"`); we read the actual lines from disk using the file path and line numbers.
+
+**LLM-related risks:**
+- LLMs hallucinate. The verifier catches the obvious cases (fabricated quotes, fabricated function names) but cannot catch every subtle reasoning error. Treat verdicts as a senior engineer's first-pass triage, not as ground truth.
+- Verdicts on the same finding can vary slightly between fresh runs. Cached verdicts are stable. If consistency matters, lean on the cache.
+- The tool sees only the code in the matched function and one hop of called functions. Vulnerabilities that depend on dataflow further away than that will tend toward `needs_human_review`, which is the safe default.
+
+**Things this tool does NOT do:**
+- It does not replace a security engineer's review.
+- It does not auto-fix vulnerabilities.
+- It does not run Semgrep for you (Semgrep is a separate tool you run first).
+- It does not understand business context (e.g., "this endpoint is internal-only and behind a WAF"). Those decisions stay with humans; the tool routes them to `needs_human_review` with a note about what to verify.
+
+## Roadmap (v0.2 and beyond)
+
+- **Prompt caching** — Anthropic's prompt-caching feature should reduce input cost by ~35%. Mostly free win.
+- **Per-project configuration** (`.sg-triage.yml`) — declare trust assumptions like "this directory is internal-only" or "these functions are validated sanitizers."
+- **JavaScript and Go support** — multi-language extractor architecture is already in place; we just need to enable additional grammars.
+- **Baseline file** — checkable-into-the-repo verdict store for team-shared triage state.
+- **Better verifier vocabulary handling** — the current allowlist is hand-maintained. Replace with a static English wordlist or a framework-aware mode.
+- **Optional Haiku-first routing** — use Haiku for initial verdicts and escalate to Sonnet only on uncertainty. Could cut cost by 50–70%.
+
+## Contributing
+
+This is a personal project, very early. Issues and PRs welcome. If you've run the tool on a codebase and found verdicts that are clearly wrong (especially false positives that should have been `needs_human_review`), please open an issue with the rule ID and your reasoning — that feedback drives the prompt design.
 
 ## License
 
-MIT
+MIT.
