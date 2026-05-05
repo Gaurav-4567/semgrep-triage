@@ -111,3 +111,64 @@ What this guardrail does NOT catch:
 Both of these are real limitations. The verifier is not a proof system. It's a cheap, fast sanity check that catches the most common and most dangerous failure mode — fabrication — and is honest about what it leaves to humans.
 
 The asymmetry of errors argument from the previous section applies here too. A verifier that's too aggressive (rejects legitimate verdicts) costs the user some FP findings they could have closed quickly. A verifier that's too lenient (accepts fabricated reasoning) ships wrong "this is fine" verdicts to production. The current implementation leans aggressive, downgrading on any verifier complaint. That's the safe direction.
+
+## Design choice 3: The verifier — what it catches, what it doesn't
+
+The verifier is two checks that run after every LLM call. Both are cheap, both are imperfect, both make the tool meaningfully more trustworthy than "ask Claude, trust the answer."
+
+### Check 1: Evidence quotes must appear in source
+
+Covered in the previous section. Every string in the LLM's `evidence_quotes` array has to appear verbatim (whitespace-normalized) in the code that was sent to the model. If any quote fails this check, the verdict is downgraded to `needs_human_review` and the failed quote is recorded in the verdict's verifier notes.
+
+### Check 2: Reasoning grounding
+
+This is the more interesting check. After Claude produces a verdict, the reasoning text gets scanned for identifier-like tokens — function names, variable names, dotted references like `os.path.isfile`, calls like `func()`, backtick-quoted code references like `\`request.path\``. Each token is then checked against the prompt context: does this identifier actually appear in the code we showed the model?
+
+The intuition: if the LLM mentions a function or variable that doesn't exist in the code we sent it, something is wrong. Either the LLM made the identifier up (hallucination), or it's referencing framework knowledge from its training data that may or may not match the actual implementation.
+
+The token extraction uses four regex patterns:
+
+- Backtick-quoted tokens: `\`identifier\``
+- Function calls: `name()`
+- Dotted references: `module.function`
+- Camel-case or snake-case identifiers: `BoundField`, `password_validated`
+
+Hits get filtered through a vocabulary whitelist (`_GENERIC_VOCAB`) of generic English and security terms — words like "function," "variable," "input," "validation," "framework." Without this whitelist, the verifier would flag every reasoning paragraph for using ordinary English. With it, the verifier flags only words that look like code references but don't appear in the code.
+
+If any flagged token survives the whitelist, the verdict is downgraded — same as a failed quote check. The original LLM verdict is preserved; the user sees both.
+
+### What the verifier catches
+
+Three real failure modes:
+
+**Fabricated identifiers.** Claude sometimes invents function names that sound plausible. In a real run, Claude wrote a verdict for a Django finding that referenced `request.get_host()` — a real Django method, but one that didn't appear in the code we sent it. The verifier flagged it. The verdict (which was confidently `false_positive`) got downgraded to `needs_human_review`. A human looking at the original verdict could decide if the reasoning was correct despite the missing code reference, but the tool wouldn't auto-close it.
+
+**Fabricated quotes.** Less common with capable models, but happens. Easy to catch.
+
+**Confident over-reach beyond visible context.** When the LLM reasons about callers or parent classes it can't see, those references get flagged. This is technically not "hallucination" — Claude knows real Django classes from training — but the user should still be told that the verdict relies on context the tool didn't actually verify.
+
+### What the verifier does NOT catch
+
+Honest list of failure modes the verifier cannot detect:
+
+**Logically wrong reasoning over real code.** The LLM can quote real code, reference real identifiers, and still misinterpret what they do. If Claude looks at `validate_input(x)` and assumes it's a sanitizer when it's actually just a length check, the verifier sees real code references and a coherent narrative. It cannot judge whether the narrative is correct.
+
+**Cherry-picked quotes.** The LLM could cite real but irrelevant code to justify a verdict. The verifier doesn't check whether the quoted code is logically connected to the conclusion.
+
+**Subtle dataflow errors.** "This input flows through `escape()` before reaching the sink" — true if the code path goes through `escape()`, false if there's a branch the LLM didn't trace. The verifier doesn't trace dataflow; it only checks whether the names mentioned exist.
+
+**Framework knowledge gaps.** When Claude assumes Django's `ErrorList` escapes its output (it does) or that Flask's `Markup()` is safe in a given context (it depends), those assumptions come from training data. The verifier doesn't validate them; it only flags references that aren't in the visible code.
+
+These limitations are real and significant. They are also not unique to this tool. Any LLM-based reasoning system has them. The honest move is to acknowledge them, not to claim verification solves them.
+
+### Why imperfect verification is still worth doing
+
+Two reasons.
+
+First, it raises the bar. A naive LLM triage tool can be fooled by any plausible-sounding reasoning, including pure fabrication. With the verifier, fabrication has to be plausible AND consistent with code that exists. That's a meaningfully higher bar — most LLM hallucinations in my testing are sloppy enough to fail the substring check.
+
+Second, the asymmetry-of-errors argument. The cost of the verifier being too aggressive (false positives flagged for review when the LLM was actually right) is small — the user looks at one more finding. The cost of the verifier being too lenient (a fabricated FP verdict accepted) can be large — a real bug closed by mistake. Erring toward strict verification matches the cost structure of security work.
+
+The verifier in v0.1 leans aggressive. On the Django run, several confident `false_positive` verdicts got downgraded because the reasoning referenced framework class names (`BoundField`, `ErrorList`, `MD5PasswordHasher`) that Claude knows from training but weren't in the immediate code. Those verdicts were probably correct. Downgrading them cost the user some FPs they could have closed quickly. This is a known tradeoff and a v0.2 priority — possibly via a static English wordlist as the base whitelist, possibly via a "framework-aware" mode that loosens checks when the file is clearly framework code.
+
+Either way, the design principle holds: when the verifier is uncertain whether the LLM is right, it routes to human review rather than guessing. The point isn't to be a proof system. It's to be honest about what we've actually verified.
