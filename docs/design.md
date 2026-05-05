@@ -207,3 +207,21 @@ The prompt threads this distinction explicitly:
 This kind of explicit anti-bias instruction is one of the underappreciated levers in prompt design. LLMs absorb a lot of cultural intuitions about code (test code is throwaway, framework code is trustworthy, vendor code is someone else's problem) that aren't reliable for security analysis. Naming those intuitions and telling the LLM to override them produces measurably more cautious verdicts.
 
 A related anti-bias instruction in the prompt: deployment context (e.g., "this endpoint is internal-only" or "this app is behind a WAF") is treated as `needs_human_review`, never as `false_positive`. The LLM cannot verify network topology from code, and it shouldn't be asked to. If a verdict's logic depends on "this endpoint isn't exposed to the internet," that decision belongs to a human who knows the deployment.
+
+## What I tried and rejected
+
+A handful of design choices that didn't make it into v0.1, with reasons.
+
+**Binary FP/TP verdicts.** Covered above — three buckets is non-negotiable for security work.
+
+**Asking the LLM for a confidence score (0.0 to 1.0).** Tried this in early prototyping. The LLM produces numbers that look meaningful but aren't well-calibrated — a 0.85 from one finding and a 0.85 from another don't represent the same probability of being correct. I switched to coarse buckets (`low`, `medium`, `high`) which are easier for the LLM to use consistently and easier for the human to act on.
+
+**Letting the LLM decide whether to call the verifier.** Considered exposing verification as an optional step the LLM could request when uncertain. Rejected because it introduces an obvious incentive for the LLM to skip verification when it's confident — exactly the case where confidence is least correlated with correctness. Verification runs unconditionally on every verdict.
+
+**Caching at the file level instead of the finding level.** Would be cheaper to cache and invalidate, but breaks the property that editing one function doesn't invalidate verdicts on unrelated functions in the same file. Per-finding caching with the function-source fingerprint is more granular work, but produces a cache that actually behaves correctly.
+
+**Multi-turn LLM conversations to refine verdicts.** The pattern would be: LLM produces a verdict, sg-triage feeds back the verifier's complaints, LLM revises. Rejected for v0.1 because it doubles the latency and cost per finding for an unclear quality gain. The verifier is a quality gate, not a feedback loop. If the LLM fabricates, route to human; don't ask the LLM to try again.
+
+**Auto-fix.** This was tempting and I deliberately did not build it. The Semgrep blog from 2023 shows their own auto-fix experiments produced ~40% directly committable output and ~40% useful starting points. Those are decent numbers for a code suggestion, but auto-fix in security context has a worse failure mode than triage: a wrong fix can introduce a new vulnerability while looking like it closed one. Triage that says "look at this" is honest about what it is. A fix that confidently rewrites your code and is subtly wrong is a different category of risk. Maybe v3 territory; not v0.1.
+
+**A web UI.** sg-triage is a CLI. The output formats (JSON for CI, Markdown for sharing, terminal panels for interactive use) cover the deployment patterns I care about. A web UI is a different product with different concerns (auth, persistence, multi-user state). Out of scope.
