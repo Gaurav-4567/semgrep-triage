@@ -225,3 +225,15 @@ A handful of design choices that didn't make it into v0.1, with reasons.
 **Auto-fix.** This was tempting and I deliberately did not build it. The Semgrep blog from 2023 shows their own auto-fix experiments produced ~40% directly committable output and ~40% useful starting points. Those are decent numbers for a code suggestion, but auto-fix in security context has a worse failure mode than triage: a wrong fix can introduce a new vulnerability while looking like it closed one. Triage that says "look at this" is honest about what it is. A fix that confidently rewrites your code and is subtly wrong is a different category of risk. Maybe v3 territory; not v0.1.
 
 **A web UI.** sg-triage is a CLI. The output formats (JSON for CI, Markdown for sharing, terminal panels for interactive use) cover the deployment patterns I care about. A web UI is a different product with different concerns (auth, persistence, multi-user state). Out of scope.
+
+## Open problems
+
+Things I haven't figured out yet. Some I'll work on for v0.2; others I'd genuinely like input on.
+
+**Verifier vocabulary handling.** The current grounding check uses a hand-maintained whitelist of generic English and security terms. This is brittle. Add a new class of false-positive (e.g., the verifier flags "interpolation" as ungrounded), and the fix is appending another word to a frozenset. A static English wordlist as the base, plus framework-aware loosening when the file is clearly framework code, would be structurally better. I haven't decided how to scope "framework-aware."
+
+**How much code context is enough.** Right now sg-triage extracts the containing function plus one hop of called functions. More context costs tokens and probably improves verdict quality up to a point — but I don't know where that point is, and I haven't measured it carefully. Two hops? The full file? The full module? An empirical question I'd like to answer.
+
+**Calibration on real engagement.** The Django run produced verdicts I read and judged as good, but my judgment is one data point. A small hand-labeled corpus (50-100 findings with ground truth) would let me measure verdict accuracy quantitatively rather than narratively. This is the next thing I'm building.
+
+**Whether the asymmetry-of-errors framing actually matches user preference.** I designed the tool around "wrong FP > wrong TP." Some users may genuinely prefer fewer needs_review verdicts even at the cost of occasional wrong FP closures, because the human time saved exceeds the bug-shipped cost in their environment. v0.2 might expose a `--strict` / `--lenient` mode that exposes this tradeoff to the user. Right now I'm guessing, and I'd rather know.
