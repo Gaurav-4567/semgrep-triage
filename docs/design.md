@@ -72,3 +72,42 @@ In practice this means the tool routes findings to humans more often than a conf
 The Django run is illustrative. Out of 50 Python findings, 14 came back as `false_positive` (high confidence), 0 as `likely_true_positive`, and 36 as `needs_human_review`. A binary system would have been forced to label those 36 as either FP or TP. Either choice would have been wrong some percentage of the time, and given that any wrong "FP" call is the catastrophic kind, the safe choice would have been to label all 36 as TP — at which point the tool has done nothing useful for those findings.
 
 Three buckets is a small schema decision. It changes everything about the prompt, the verifier, and the trust model.
+
+## Design choice 2: Evidence quotes as a hard requirement for false-positive verdicts
+
+When the LLM returns a `false_positive` verdict, it must include verbatim quotes from the code that justify the verdict. Empty `evidence_quotes` array on a `false_positive` is a schema violation — the Pydantic model rejects it, and the orchestrator routes the finding to `needs_human_review` with a note explaining why.
+
+This is the single most important guardrail in the tool.
+
+The reason is specific to how LLMs fail. When an LLM is uncertain and forced to commit, it doesn't say "I don't know." It generates plausible-sounding justification. The justification reads like real reasoning, references things that sound like they could be in the code, and is wrong. Anyone who has used an LLM extensively has seen this — the technical term is "hallucination," but the practical reality is "confident bullshit."
+
+Requiring evidence quotes attacks this failure mode directly. To produce a false-positive verdict, the LLM has to point at specific lines in the code we sent it. Those lines are then programmatically checked: does this string actually appear, verbatim (whitespace-normalized), in the code we showed the model?
+
+If the quote is fabricated, the check fails. If the check fails, the verdict gets downgraded to `needs_human_review` with the original LLM output preserved alongside the verifier's complaint. The human sees both and decides.
+
+The Flask `eval` example earlier in this doc illustrates the mechanic. Claude returned three evidence quotes:
+
+> ```python
+> startup = os.environ.get("PYTHONSTARTUP")
+> if startup and os.path.isfile(startup):
+>     eval(compile(f.read(), startup, "exec"), ctx)
+> ```
+
+Each one appears verbatim in `src/flask/cli.py`. The verifier confirms that, the verdict stands, and the user sees the high-confidence FP.
+
+If Claude had hallucinated a quote — say, `if not is_admin_user():` — the verifier would have caught it. The verdict would have come out as needs_human_review with a note: "LLM cited code that does not appear in source: `if not is_admin_user():`."
+
+A few details worth noting about the matching:
+
+- **Whitespace is normalized.** Runs of spaces and tabs collapse to single spaces; leading and trailing whitespace is stripped. This handles cases where the LLM correctly identifies code but reformats indentation.
+- **Line-number prefixes are stripped from the haystack.** When the prompt shows code as `1023 | eval(compile(...))`, the matcher strips the `1023 | ` before checking, so the LLM can quote without the line number.
+- **The match is substring, not regex.** The LLM cannot use this as an injection vector because nothing it returns is interpreted as code.
+
+What this guardrail does NOT catch:
+
+- **Real quotes used to justify wrong reasoning.** The LLM can quote real code and then misinterpret what it means. The verifier checks "did you cite real code"; it does not check "did you understand it." That's a harder problem and is partly addressed by the second verifier layer (covered next).
+- **Quotes that are real but irrelevant.** The verifier doesn't check whether the quoted code is logically connected to the verdict. A determined LLM could cite arbitrary surrounding code and write reasoning that doesn't depend on it.
+
+Both of these are real limitations. The verifier is not a proof system. It's a cheap, fast sanity check that catches the most common and most dangerous failure mode — fabrication — and is honest about what it leaves to humans.
+
+The asymmetry of errors argument from the previous section applies here too. A verifier that's too aggressive (rejects legitimate verdicts) costs the user some FP findings they could have closed quickly. A verifier that's too lenient (accepts fabricated reasoning) ships wrong "this is fine" verdicts to production. The current implementation leans aggressive, downgrading on any verifier complaint. That's the safe direction.
