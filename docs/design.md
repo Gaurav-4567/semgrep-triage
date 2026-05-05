@@ -47,3 +47,28 @@ Three constraints shaped every design decision:
 3. **Skeptical engineers won't use a black box.** Every verdict needs to expose its reasoning and its evidence.
 
 The rest of this post is how those constraints turned into specific code.
+
+## Design choice 1: Three verdict buckets, not two
+
+The obvious schema for a triage tool is binary: this finding is real, or it's a false positive. Two buckets, clean output, easy to act on.
+
+I use three: `false_positive`, `likely_true_positive`, `needs_human_review`. The third bucket is the most important one in the schema, and it's the one a binary system can't have.
+
+The reasoning is asymmetry of errors. When sg-triage gets a verdict wrong, there are two failure modes:
+
+- **Wrong "likely_true_positive":** the tool flags something as a real bug when it isn't. The human looks at it, says "no, that's fine," and ignores it. Cost: the human's time.
+- **Wrong "false_positive":** the tool says a real vulnerability is fine. The human trusts it, doesn't look further. Cost: a real vulnerability ships to production.
+
+These are not the same kind of wrong. The second one ends careers and breaches companies. The first one is annoying. Any triage tool that treats them symmetrically is calibrated wrong for security work.
+
+Three buckets encode the asymmetry directly. The LLM is told, in the system prompt, that uncertainty must default to `needs_human_review`. The prompt is explicit about what counts as enough evidence for each verdict:
+
+- `false_positive` requires verbatim quotes from visible code that demonstrate why the finding doesn't apply. The verifier (covered later) enforces this.
+- `likely_true_positive` requires identifiable user input flowing to a dangerous sink, traceable in the visible code.
+- `needs_human_review` is the safe default when the LLM can see something suspicious but can't trace the data flow with the context it has.
+
+In practice this means the tool routes findings to humans more often than a confident binary system would. That's the point. A false positive that gets routed to a human is cheap. A real bug marked as false positive is catastrophic.
+
+The Django run is illustrative. Out of 50 Python findings, 14 came back as `false_positive` (high confidence), 0 as `likely_true_positive`, and 36 as `needs_human_review`. A binary system would have been forced to label those 36 as either FP or TP. Either choice would have been wrong some percentage of the time, and given that any wrong "FP" call is the catastrophic kind, the safe choice would have been to label all 36 as TP — at which point the tool has done nothing useful for those findings.
+
+Three buckets is a small schema decision. It changes everything about the prompt, the verifier, and the trust model.
