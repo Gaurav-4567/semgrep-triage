@@ -189,3 +189,21 @@ The `prompt_version` field in the fingerprint matters too. When I bump the promp
 `--no-cache` skips both read and write for a run. Use this when you want fresh verdicts (e.g., after upgrading the model or evaluating prompt changes). In v0.2 this flag will be renamed to `--force` because the current name is ambiguous.
 
 Caching is not glamorous. It's also the difference between a tool you can run nightly and a tool that costs $10 every time someone edits a comment.
+
+## Design choice 5: File path is provenance, not importance
+
+When the LLM triages a finding, it sees the file path the finding came from. The natural reaction — for humans and for LLMs — is to use the path as a signal of importance. A finding in `src/auth/login.py` feels more concerning than one in `tests/fixtures/example.py`. A finding in `vendor/third_party/lib.py` feels easier to dismiss than one in your own code.
+
+This intuition is wrong, and the system prompt explicitly tells the LLM not to use it.
+
+The reason is subtle. File paths legitimately carry **provenance** information — whether code is test code, vendored code, example code, generated code. That's relevant to verdicts: a SQL injection in test fixture code is genuinely less exploitable than the same pattern in production handlers. The LLM should use this.
+
+What file paths do NOT reliably carry is **importance**. A bug in vendored code is still a bug. An issue in `examples/` might be code users copy-paste into their own projects. A finding in a sleepy-looking utility module might be in the most-called function in the codebase. The LLM cannot tell from the path alone.
+
+The prompt threads this distinction explicitly:
+
+> **File path as provenance vs. importance.** Use the file path to identify whether code is test fixtures, examples, vendored libraries, or generated. These are legitimate provenance signals that affect exploitability. Do NOT treat the file path as a signal of importance — a "vendored" finding is not automatically less serious, an "examples/" finding may still ship to users, and a "tests/" finding may still leak credentials. Reason about exploitability from the code, not from the directory name.
+
+This kind of explicit anti-bias instruction is one of the underappreciated levers in prompt design. LLMs absorb a lot of cultural intuitions about code (test code is throwaway, framework code is trustworthy, vendor code is someone else's problem) that aren't reliable for security analysis. Naming those intuitions and telling the LLM to override them produces measurably more cautious verdicts.
+
+A related anti-bias instruction in the prompt: deployment context (e.g., "this endpoint is internal-only" or "this app is behind a WAF") is treated as `needs_human_review`, never as `false_positive`. The LLM cannot verify network topology from code, and it shouldn't be asked to. If a verdict's logic depends on "this endpoint isn't exposed to the internet," that decision belongs to a human who knows the deployment.
