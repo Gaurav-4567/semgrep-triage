@@ -172,3 +172,20 @@ Second, the asymmetry-of-errors argument. The cost of the verifier being too agg
 The verifier in v0.1 leans aggressive. On the Django run, several confident `false_positive` verdicts got downgraded because the reasoning referenced framework class names (`BoundField`, `ErrorList`, `MD5PasswordHasher`) that Claude knows from training but weren't in the immediate code. Those verdicts were probably correct. Downgrading them cost the user some FPs they could have closed quickly. This is a known tradeoff and a v0.2 priority — possibly via a static English wordlist as the base whitelist, possibly via a "framework-aware" mode that loosens checks when the file is clearly framework code.
 
 Either way, the design principle holds: when the verifier is uncertain whether the LLM is right, it routes to human review rather than guessing. The point isn't to be a proof system. It's to be honest about what we've actually verified.
+
+## Design choice 4: Caching that survives unrelated edits
+
+Every triaged finding gets cached at `~/.sg-triage/cache/<fingerprint>.json`. Cached verdicts are returned instantly with no API cost. This is the difference between a tool you run once and a tool you can put in CI.
+
+The interesting question is what the fingerprint should be. The naive answer is "hash the finding" — rule ID, file path, line number, matched code. That works for a single scan, but breaks the moment someone edits the file. Adding a comment to line 5 shifts every line below, and a finding that was on line 200 is now on line 201. With a line-number-sensitive fingerprint, every finding in the file gets re-triaged. On a 500-finding codebase, that's $10 of API costs after a one-character commit.
+
+The fingerprint sg-triage uses is `SHA256(prompt_version + rule_id + file_path + matched_code + containing_function_source)`, truncated to 16 hex characters. Two properties:
+
+- **Line-number-independent.** Adding a comment elsewhere in the file doesn't change the fingerprint. The cache survives.
+- **Sensitive to changes that actually affect the verdict.** If the matched code changes, or if the function containing it changes, the fingerprint changes, and the finding gets re-triaged. This is the right behavior — when someone edits the function around the finding, the previous verdict may no longer apply.
+
+The `prompt_version` field in the fingerprint matters too. When I bump the prompt between releases, the fingerprint of every cached entry changes, and the entire cache invalidates automatically. This means I can iterate on the prompt without worrying about stale verdicts — there's no manual cache-bust step, no migration script, no "did you remember to clear the cache" footgun.
+
+`--no-cache` skips both read and write for a run. Use this when you want fresh verdicts (e.g., after upgrading the model or evaluating prompt changes). In v0.2 this flag will be renamed to `--force` because the current name is ambiguous.
+
+Caching is not glamorous. It's also the difference between a tool you can run nightly and a tool that costs $10 every time someone edits a comment.
