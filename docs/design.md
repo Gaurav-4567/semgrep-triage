@@ -237,3 +237,22 @@ Things I haven't figured out yet. Some I'll work on for v0.2; others I'd genuine
 **Calibration on real engagement.** The Django run produced verdicts I read and judged as good, but my judgment is one data point. A small hand-labeled corpus (50-100 findings with ground truth) would let me measure verdict accuracy quantitatively rather than narratively. This is the next thing I'm building.
 
 **Whether the asymmetry-of-errors framing actually matches user preference.** I designed the tool around "wrong FP > wrong TP." Some users may genuinely prefer fewer needs_review verdicts even at the cost of occasional wrong FP closures, because the human time saved exceeds the bug-shipped cost in their environment. v0.2 might expose a `--strict` / `--lenient` mode that exposes this tradeoff to the user. Right now I'm guessing, and I'd rather know.
+
+## Try it
+
+sg-triage is on GitHub: [github.com/Gaurav-4567/semgrep-triage](https://github.com/Gaurav-4567/semgrep-triage). MIT licensed, ~$0.02 per Python finding triaged, runs locally with your own Anthropic API key.
+
+Quickstart in four commands:
+
+```
+git clone https://github.com/Gaurav-4567/semgrep-triage.git
+cd semgrep-triage
+pip install -e .
+sg-triage triage /path/to/findings.json /path/to/your/repo --output-md report.md
+```
+
+Honest ask: if you run it on a real codebase and find verdicts that are clearly wrong — especially `false_positive` verdicts that should have been `needs_human_review` — please open an issue with the rule ID and your reasoning. That feedback drives the prompt design directly. Same goes for verdicts where the verifier flagged something it shouldn't have.
+
+This is v0.1. Most of the rough edges are listed above. The interesting question for me is which of those rough edges you actually hit, and which ones don't matter in practice.
+
+— Gaurav
