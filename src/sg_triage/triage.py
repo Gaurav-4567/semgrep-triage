@@ -247,28 +247,43 @@ def _process_one(
             output_tokens=result.output_tokens,
         )
 
-    # Verifiers (always run, never raise)
+    # Verifiers (always run, never raise).
+    #
+    # Hard fail (quote_issues): downgrade verdict to needs_human_review.
+    # Fabricated quotes are unambiguous — if the LLM cited code that doesn't
+    # exist, the verdict is built on a fabrication and we don't trust it.
+    #
+    # Soft warning (grounding_issues): surface to user but don't downgrade.
+    # The grounding check produces a lot of false alarms (generic English
+    # words, framework class names from training, reasoning by contrast).
+    # In practice it catches few real hallucinations, so we make its output
+    # advisory rather than authoritative. The user reads the warning and
+    # interprets the verdict accordingly.
     quote_issues = verify_evidence_quotes(result.verdict, finding, context)
     grounding_issues = verify_grounding(result.verdict, finding, context)
-    verification_notes = quote_issues + grounding_issues
 
-    if verification_notes:
-        # Verifier flagged issues. Downgrade only if the verdict was more
-        # confident than needs_human_review — there's no point "downgrading"
-        # a verdict that's already at the safe level.
+    if quote_issues:
+        # Hard fail: downgrade. Only meaningful if the verdict was more
+        # confident than needs_human_review.
         if result.verdict.verdict == VerdictLabel.NEEDS_HUMAN_REVIEW:
             verdict = result.verdict
             original_label = None
-            verification_passed = False
         else:
             verdict, original_label = _downgrade_for_verification_failure(
-                result.verdict, verification_notes
+                result.verdict, quote_issues
             )
-            verification_passed = False
+        verification_passed = False
+        verification_notes = quote_issues
     else:
         verdict = result.verdict
         original_label = None
         verification_passed = True
+        verification_notes = []
+
+    # Grounding issues are always advisory: they go in advisory_warnings
+    # regardless of whether the verdict was downgraded. They never affect
+    # verification_passed or the verdict itself.
+    advisory_warnings = grounding_issues
 
     triaged = TriagedFinding(
         finding=finding,
@@ -278,6 +293,7 @@ def _process_one(
         from_cache=False,
         verification_passed=verification_passed,
         verification_notes=verification_notes,
+        advisory_warnings=advisory_warnings,
         original_verdict=original_label,
         llm_call_duration_seconds=result.duration_seconds,
         input_tokens=result.input_tokens,
