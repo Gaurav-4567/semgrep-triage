@@ -140,6 +140,18 @@ def _render_one_finding(idx: int, t: TriagedFinding) -> str:
         for note in t.verification_notes:
             parts.append(f"- ⚠️ {note}")
 
+    if t.advisory_warnings:
+        parts.append("**Advisory note**")
+        parts.append(
+            "_The grounding check flagged tokens in the reasoning that don't "
+            "appear in the visible code. This often means the LLM is reasoning "
+            'by contrast (e.g. "unlike pickle.loads which would be vulnerable") '
+            "or referencing framework knowledge from training. It can also "
+            "indicate fabrication. Read the reasoning carefully._"
+        )
+        for warning in t.advisory_warnings:
+            parts.append(f"- ℹ️ {warning}")
+
     parts.append(f"**Suggested action:** {t.verdict.suggested_action}")
 
     return "\n\n".join(parts)
