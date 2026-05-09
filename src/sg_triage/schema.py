@@ -216,8 +216,17 @@ class TriagedFinding(BaseModel):
     verification_passed: bool = True
     verification_notes: list[str] = Field(
         default_factory=list,
-        description="Issues raised by post-LLM verifiers "
-        "(e.g. 'evidence quote not found in source')",
+        description="Hard-fail issues from verifiers — these caused the verdict "
+        "to be downgraded (e.g. 'evidence quote not found in source')",
+    )
+    advisory_warnings: list[str] = Field(
+        default_factory=list,
+        description="Soft warnings from verifiers — surfaced to the user but do "
+        "NOT downgrade the verdict. Currently used for grounding-check flags, "
+        "which catch some real fabrications but produce false alarms on generic "
+        "English words, framework class names known from training, and technical "
+        "references made by contrast (e.g. 'unlike pickle.loads which would be "
+        "vulnerable...'). Read carefully — they require human judgment to interpret.",
     )
 
     # If verification failed and we downgraded the verdict, preserve the original
