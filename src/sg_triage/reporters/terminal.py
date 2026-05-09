@@ -127,12 +127,27 @@ def _render_finding_panel(idx: int, total: int, t: TriagedFinding, console: Cons
             style="dim",
         )
 
-    # Verifier notes
+    # Verifier notes (hard fail — caused downgrade)
     if t.verification_notes:
         body.append("\n")
         body.append("Verifier notes\n", style="bold yellow")
         for note in t.verification_notes:
             body.append(f"  ⚠ {note}\n", style="yellow")
+
+    # Advisory warnings (soft signal — verdict NOT downgraded)
+    if t.advisory_warnings:
+        body.append("\n")
+        body.append("Advisory note\n", style="bold cyan")
+        body.append(
+            "  The grounding check flagged tokens in the reasoning that don't\n"
+            "  appear in the visible code. This often means the LLM is reasoning\n"
+            '  by contrast (e.g. "unlike pickle.loads which would be vulnerable")\n'
+            "  or referencing framework knowledge from training. It can also\n"
+            "  indicate fabrication. Read the reasoning carefully.\n",
+            style="dim cyan",
+        )
+        for warning in t.advisory_warnings:
+            body.append(f"  ℹ {warning}\n", style="cyan")
 
     # Suggested action
     body.append("\n")
