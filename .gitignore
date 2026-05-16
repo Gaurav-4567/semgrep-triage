@@ -27,3 +27,10 @@ findings.json
 *.report.md
 # Working notes
 .claude-context.md
+
+# Additional run artifacts (default outputs, eval, diagnostic)
+report.md
+report.json
+eval-*.md
+eval-*.json
+run-*.json
