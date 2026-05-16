@@ -110,68 +110,91 @@ What this guardrail does NOT catch:
 
 Both of these are real limitations. The verifier is not a proof system. It's a cheap, fast sanity check that catches the most common and most dangerous failure mode — fabrication — and is honest about what it leaves to humans.
 
-The asymmetry of errors argument from the previous section applies here too. A verifier that's too aggressive (rejects legitimate verdicts) costs the user some FP findings they could have closed quickly. A verifier that's too lenient (accepts fabricated reasoning) ships wrong "this is fine" verdicts to production. The current implementation leans aggressive, downgrading on any verifier complaint. That's the safe direction.
+The asymmetry of errors argument from the previous section applies here too. A verifier that's too aggressive (rejects legitimate verdicts) costs the user some FP findings they could have closed quickly. A verifier that's too lenient (accepts fabricated reasoning) ships wrong "this is fine" verdicts to production. The current implementation leans aggressive on this check, downgrading on any failed quote match. That's the safe direction — and the next section explains why the second verifier check is calibrated differently.
 
 ## Design choice 3: The verifier — what it catches, what it doesn't
 
-The verifier is two checks that run after every LLM call. Both are cheap, both are imperfect, both make the tool meaningfully more trustworthy than "ask Claude, trust the answer."
+The verifier is two checks that run after every LLM call. They are not symmetric. One is a hard fail that downgrades the verdict; the other is an advisory signal that surfaces information to the user without changing the verdict. This asymmetry is a deliberate choice that was made after the first version of the verifier — which treated both as hard fails — produced unusable output in real testing.
 
-### Check 1: Evidence quotes must appear in source
+### Check 1: Evidence quotes must appear in source — hard fail
 
-Covered in the previous section. Every string in the LLM's `evidence_quotes` array has to appear verbatim (whitespace-normalized) in the code that was sent to the model. If any quote fails this check, the verdict is downgraded to `needs_human_review` and the failed quote is recorded in the verdict's verifier notes.
+Covered in the previous section. Every string in the LLM's `evidence_quotes` array has to appear verbatim (whitespace-normalized) in the code that was sent to the model. If any quote fails this check, the verdict is downgraded to `needs_human_review` and the failed quote is recorded in `verification_notes`.
 
-### Check 2: Reasoning grounding
+This is enforced as a hard fail because the failure mode it catches — quote fabrication — is unambiguous. If the LLM cites a string and that string is not in the code we sent it, the LLM is wrong. There is no innocent explanation. The substring check has a false-alarm rate near zero in practice.
 
-This is the more interesting check. After Claude produces a verdict, the reasoning text gets scanned for identifier-like tokens — function names, variable names, dotted references like `os.path.isfile`, calls like `func()`, backtick-quoted code references like `\`request.path\``. Each token is then checked against the prompt context: does this identifier actually appear in the code we showed the model?
+### Check 2: Reasoning grounding — advisory only
 
-The intuition: if the LLM mentions a function or variable that doesn't exist in the code we sent it, something is wrong. Either the LLM made the identifier up (hallucination), or it's referencing framework knowledge from its training data that may or may not match the actual implementation.
+After Claude produces a verdict, the reasoning text gets scanned for identifier-like tokens — function names, variable names, dotted references like `os.path.isfile`, calls like `func()`, backtick-quoted code references. Each token is then checked against the prompt context: does this identifier actually appear in the code we showed the model?
+
+The intuition is the same as the quote check: if the LLM mentions a function or variable that doesn't exist in the code we sent it, something might be wrong. Either the LLM made the identifier up, or it's referencing framework knowledge from its training data, or it's reasoning by contrast about code that isn't there.
 
 The token extraction uses four regex patterns:
 
-- Backtick-quoted tokens: `\`identifier\``
-- Function calls: `name()`
-- Dotted references: `module.function`
-- Camel-case or snake-case identifiers: `BoundField`, `password_validated`
+- Backtick-quoted tokens
+- Function calls of the form `name()`
+- Dotted references like `module.function`
+- Camel-case and snake-case identifiers
 
-Hits get filtered through a vocabulary whitelist (`_GENERIC_VOCAB`) of generic English and security terms — words like "function," "variable," "input," "validation," "framework." Without this whitelist, the verifier would flag every reasoning paragraph for using ordinary English. With it, the verifier flags only words that look like code references but don't appear in the code.
+Hits are filtered through a small whitelist of generic English and security vocabulary, then the survivors get reported. Critically: they get reported as `advisory_warnings` on the finding, not as verifier failures. The verdict does not change. The user sees a separate "Advisory note" section in the terminal and markdown reports, the JSON output includes the warnings under their own key, and life continues.
 
-If any flagged token survives the whitelist, the verdict is downgraded — same as a failed quote check. The original LLM verdict is preserved; the user sees both.
+This was not the original design. The first version of the verifier treated grounding the same as the quote check — any flagged token downgraded the verdict. That version performed poorly enough in testing that I changed the policy.
+
+### Why grounding is advisory, not hard
+
+Two runs convinced me to split the checks.
+
+The first was a Django scan. Confident `false_positive` verdicts kept getting downgraded because the reasoning referenced framework class names like `BoundField`, `ErrorList`, and `MD5PasswordHasher`. These are real Django classes. Claude knows them from training. They are not hallucinations. They were just not in the immediate code window we sent the model. Under hard-fail grounding, legitimate verdicts went to `needs_human_review` for what amounted to "Claude correctly knew what Django code looks like."
+
+The second was a small project with 8 Python findings. Under hard-fail grounding, all 8 finished as `needs_human_review`. The tool produced zero actionable verdicts on a scan where at least two findings were clearly false positives. Looking at the downgraded verdicts, the pattern was consistent: three failure modes, none of them actually fabrication.
+
+**Generic English that escaped the whitelist.** The verifier flagged words like `intercepted`, `service`, and `elsewhere` when the reasoning used them. These are ordinary English words, not code references, but they look like identifiers and the whitelist didn't cover them. Expanding the whitelist is possible but turns into an arms race — every new domain introduces new ordinary words.
+
+**Framework knowledge.** Tokens like `__init__`, framework class names, and proper-noun references to libraries get flagged when the LLM mentions them while reasoning. These are real things Claude knows from training. Flagging them as if they were hallucinations isn't useful — they're just background knowledge being applied.
+
+**Reasoning by contrast.** This is the most interesting case and the one that finally settled the decision. In the small-project scan, a `pickle.dump` call was flagged by a Semgrep rule that targets unsafe deserialization (`pickle.load` / `pickle.loads`). Claude correctly identified that the rule was misapplied — `dump` is serialization, not deserialization, and the rule is about deserializing untrusted data. The reasoning quoted the actual `pickle.dump` line and explained the distinction along these lines:
+
+> The rule targets `pickle.load` and `pickle.loads`, which deserialize potentially untrusted data. This call is `pickle.dump`, which serializes a trusted internal object to a file. The rule does not apply.
+
+The grounding check flagged `pickle.load` and `pickle.loads` as ungrounded tokens. They are, in fact, ungrounded — they don't appear in the file. But they are exactly the right things to mention. The LLM was reasoning about what the rule is intended to catch, by naming the things the rule actually matches. Under hard-fail grounding, this confident `false_positive` verdict was downgraded to `needs_human_review`. The reasoning was correct, the verdict was right, and the verifier broke the most useful finding in the scan.
+
+After that case, I split the two checks. Quote check stays hard: fabrication is unambiguous, false-alarm rate is near zero, and the cost of missing a fabricated FP is high. Grounding becomes advisory: the false-alarm rate is too high to use as a verdict gate, but the signal is still worth surfacing because some of the flagged tokens really will be hallucinations.
+
+After the split, the same 8-finding scan produces two confident false-positive verdicts, including the `pickle.dump` case. Both are stable across repeated runs. The grounding warnings are still emitted — the user sees them — but they no longer destroy the verdict they were trying to evaluate.
+
+### What the user sees now
+
+When a finding has advisory warnings, the report shows them in a separate "Advisory note" section, with a one-paragraph explanation that flagged tokens often mean reasoning-by-contrast or framework knowledge rather than fabrication, and that the user should read the reasoning carefully. The verdict and confidence are unaffected. A reader who skims past the advisory section and trusts the verdict is doing the same thing as before the verifier existed — and that is the point. The grounding check is a hint, not a gate.
+
+The hard quote check still does its job. Every `false_positive` verdict in the output is one where Claude pointed at specific real code, and the tool checked that the code is actually there. That is the strong guarantee. The advisory check adds visibility into the reasoning without claiming more than it can deliver.
 
 ### What the verifier catches
 
-Three real failure modes:
+**Fabricated quotes.** The hard check. Claude sometimes invents code that doesn't exist in the file. The substring check catches this every time. Verdict gets downgraded.
 
-**Fabricated identifiers.** Claude sometimes invents function names that sound plausible. In a real run, Claude wrote a verdict for a Django finding that referenced `request.get_host()` — a real Django method, but one that didn't appear in the code we sent it. The verifier flagged it. The verdict (which was confidently `false_positive`) got downgraded to `needs_human_review`. A human looking at the original verdict could decide if the reasoning was correct despite the missing code reference, but the tool wouldn't auto-close it.
-
-**Fabricated quotes.** Less common with capable models, but happens. Easy to catch.
-
-**Confident over-reach beyond visible context.** When the LLM reasons about callers or parent classes it can't see, those references get flagged. This is technically not "hallucination" — Claude knows real Django classes from training — but the user should still be told that the verdict relies on context the tool didn't actually verify.
+**Confidently wrong references in reasoning.** The advisory check. When Claude mentions a function or attribute that doesn't appear in the visible context, the user gets a warning. Most warnings are false alarms (framework knowledge, reasoning by contrast), but some are real hallucinations, and the user has the information to judge.
 
 ### What the verifier does NOT catch
 
-Honest list of failure modes the verifier cannot detect:
+The same list as before — these are inherent limits of post-hoc verification, not specific to the hard/soft split:
 
-**Logically wrong reasoning over real code.** The LLM can quote real code, reference real identifiers, and still misinterpret what they do. If Claude looks at `validate_input(x)` and assumes it's a sanitizer when it's actually just a length check, the verifier sees real code references and a coherent narrative. It cannot judge whether the narrative is correct.
+**Logically wrong reasoning over real code.** The LLM can quote real code, reference real identifiers, and still misinterpret what they do. The verifier sees real references and a coherent narrative. It cannot judge whether the narrative is correct.
 
-**Cherry-picked quotes.** The LLM could cite real but irrelevant code to justify a verdict. The verifier doesn't check whether the quoted code is logically connected to the conclusion.
+**Cherry-picked quotes.** The LLM could cite real but irrelevant code. The verifier doesn't check whether the quoted code is logically connected to the conclusion.
 
-**Subtle dataflow errors.** "This input flows through `escape()` before reaching the sink" — true if the code path goes through `escape()`, false if there's a branch the LLM didn't trace. The verifier doesn't trace dataflow; it only checks whether the names mentioned exist.
+**Subtle dataflow errors.** Claims like "this input flows through `escape()` before reaching the sink" are true if the path goes through `escape()` and false if a branch was missed. The verifier doesn't trace dataflow.
 
-**Framework knowledge gaps.** When Claude assumes Django's `ErrorList` escapes its output (it does) or that Flask's `Markup()` is safe in a given context (it depends), those assumptions come from training data. The verifier doesn't validate them; it only flags references that aren't in the visible code.
+**Framework knowledge gaps.** When Claude assumes Django's `ErrorList` escapes its output or that Flask's `Markup()` is safe in a given context, the verifier doesn't validate the assumption — it only flags references that aren't in the visible code. With grounding now advisory, those flags don't downgrade the verdict, but they also still don't validate the assumption.
 
-These limitations are real and significant. They are also not unique to this tool. Any LLM-based reasoning system has them. The honest move is to acknowledge them, not to claim verification solves them.
+These limitations are real and significant. They are also not unique to this tool. The honest move is to acknowledge them, not to claim verification solves them.
 
 ### Why imperfect verification is still worth doing
 
-Two reasons.
+The hard quote check raises the bar for the most common and most dangerous failure mode. A naive LLM triage tool can be fooled by any plausible-sounding reasoning, including pure fabrication. With the quote check, fabrication has to be plausible AND consistent with code that exists. That is a meaningfully higher bar — most LLM fabrication in testing is sloppy enough to fail the substring check.
 
-First, it raises the bar. A naive LLM triage tool can be fooled by any plausible-sounding reasoning, including pure fabrication. With the verifier, fabrication has to be plausible AND consistent with code that exists. That's a meaningfully higher bar — most LLM hallucinations in my testing are sloppy enough to fail the substring check.
+The advisory grounding check raises the visibility of the second-order failure mode — reasoning that wanders past visible code — without forcing the tool to downgrade verdicts it cannot actually invalidate. The user sees a hint and decides.
 
-Second, the asymmetry-of-errors argument. The cost of the verifier being too aggressive (false positives flagged for review when the LLM was actually right) is small — the user looks at one more finding. The cost of the verifier being too lenient (a fabricated FP verdict accepted) can be large — a real bug closed by mistake. Erring toward strict verification matches the cost structure of security work.
+The asymmetry-of-errors framing still applies, but it now lives at the per-check level rather than the per-tool level. Quote check: false-positive verifier complaints are nearly free, false-negative complaints would let fabricated FPs ship — so the policy leans strict. Grounding check: false-positive complaints are expensive (the small-project scan lost every actionable verdict to them), false-negative complaints cost some visibility on a small number of real hallucinations — so the policy leans advisory. Different cost structures, different policies. The split is the design.
 
-The verifier in v0.1 leans aggressive. On the Django run, several confident `false_positive` verdicts got downgraded because the reasoning referenced framework class names (`BoundField`, `ErrorList`, `MD5PasswordHasher`) that Claude knows from training but weren't in the immediate code. Those verdicts were probably correct. Downgrading them cost the user some FPs they could have closed quickly. This is a known tradeoff and a v0.2 priority — possibly via a static English wordlist as the base whitelist, possibly via a "framework-aware" mode that loosens checks when the file is clearly framework code.
-
-Either way, the design principle holds: when the verifier is uncertain whether the LLM is right, it routes to human review rather than guessing. The point isn't to be a proof system. It's to be honest about what we've actually verified.
 
 ## Design choice 4: Caching that survives unrelated edits
 
