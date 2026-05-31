@@ -1,0 +1,9 @@
+title: sg-triage
+author: REPLACE_WITH_YOUR_FULL_NAME
+description: >-
+  Open-source, local-first LLM triage for Semgrep findings,
+  with anti-hallucination guardrails.
+theme: minima
+github_username: Gaurav-4567
+baseurl: "/semgrep-triage"
+url: "https://gaurav-4567.github.io"

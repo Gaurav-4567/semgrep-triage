@@ -1,5 +1,7 @@
-# Designing an LLM-powered SAST triage tool: open source, local-first, with anti-hallucination guardrails
-
+---
+layout: page
+title: "Designing an LLM-powered SAST triage tool: open source, local-first, with anti-hallucination guardrails"
+---
 I shipped v0.1 of [sg-triage](https://github.com/Gaurav-4567/semgrep-triage), an open-source CLI that uses Claude to triage Semgrep findings. While preparing this writeup I went looking for prior art on r/netsec and discovered Semgrep themselves built this category in 2023 and have continued investing in it ([Semgrep Assistant](https://semgrep.dev/blog/2023/gpt4-and-semgrep-detailed/), now Semgrep Multimodal).
 
 That's worth addressing upfront: this isn't a novel idea. The category exists and has a commercial incumbent. What I'd argue is uncommon is a few specific design choices that make sense if you assume LLMs hallucinate and you want to ship something a skeptical security engineer would actually trust.
